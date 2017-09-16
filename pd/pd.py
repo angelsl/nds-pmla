@@ -15,6 +15,7 @@
 ## along with this program; if not, see <http://www.gnu.org/licenses/>.
 ##
 
+import struct
 import sigrokdecode as srd
 
 class Decoder(srd.Decoder):
@@ -45,13 +46,25 @@ class Decoder(srd.Decoder):
         ('cs', 'CS', (2,)),
         ('res', 'RES', (1,)),
     )
+    binary = (
+        ('combine', 'Data for the combine.py script'),
+    )
 
     def __init__(self):
-        self.reset_start = None
+        self.first_reset_end = None
+        self.reset_start = 0
         self.cs_start = None
+        self.cur_bin = None
 
     def start(self):
         self.out_ann = self.register(srd.OUTPUT_ANN)
+        self.out_bin = self.register(srd.OUTPUT_BINARY)
+
+    def timestamp(self, when):
+        if self.first_reset_end is None:
+            return 0
+        else:
+            return when - self.first_reset_end
 
     def handle_reset(self, data):
         # resetting
@@ -61,17 +74,26 @@ class Decoder(srd.Decoder):
         elif data[6] == 1 and not self.reset_start is None:
             self.put(self.reset_start, self.samplenum, self.out_ann,
                 [1, ["Reset", "RES", "R"]])
+            self.put(self.reset_start, self.samplenum, self.out_bin,
+                [0, b'\xFF\xFF\xFF\xFF' + struct.pack("<I", self.timestamp(self.reset_start))])
             self.reset_start = None
+            if self.first_reset_end is None:
+                self.first_reset_end = self.samplenum
 
     def handle_cs(self, data):
         # start select
         if data[5] == 0:
             self.cs_start = self.samplenum
+            self.cur_bin = bytearray()
         # no longer selected
         elif data[5] == 1 and not self.cs_start is None:
             self.put(self.cs_start, self.samplenum, self.out_ann,
                 [2, ["Selected", "CS", "S"]])
-            self.cs_start = None
+            self.put(self.cs_start, self.samplenum, self.out_bin,
+                [0, struct.pack("<II", len(self.cur_bin), self.timestamp(self.cs_start))
+                    + self.cur_bin])
+            self.cur_bin = self.cs_start = None
+
 
     def handle_data(self, data):
         # if CLK is not high, wtf?
@@ -82,6 +104,7 @@ class Decoder(srd.Decoder):
         nybble = (data[0]) + (data[1]<<1) + (data[2]<<2) + (data[3]<<3)
         self.put(self.samplenum, self.samplenum, self.out_ann,
                 [0, ["{:X}".format(nybble)]])
+        self.cur_bin.append(nybble)
 
     def decode(self):
         while True:
