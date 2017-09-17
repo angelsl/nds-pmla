@@ -1,21 +1,16 @@
 #!/usr/bin/python3
-import struct, sys, io
+import struct, sys, io, binascii, json
 
 NORMAL, ZEROLEN, RESET, EOF, GETNEXT = range(5)
 TSDIFF_TOLERANCE = 15000
 
-def eprint(*args, **kwargs):
+def eprint(*args, output=None, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
-
-def check(high, low, fn, err):
-    result = True
-    if not fn(low):
-        eprint("lowfile: {}", err)
-        result = False
-    if not fn(high):
-        eprint("highfile: {}", err)
-        result = False
-    return result
+    if not output is None:
+        output.append({'type': 'comment', 'comment': ' '.join(args)})
+    else:
+        print(*args, **kwargs)
+        print()
 
 def getlen(f):
     b = f.read(8)
@@ -49,103 +44,120 @@ def combine(h, l):
 def fmtba(ba):
     return ' '.join(map(lambda b: '{:02X}'.format(b), ba))
 
-highf, lowf = open(sys.argv[1], 'rb'), open(sys.argv[2], 'rb')
-highs = lows = GETNEXT
-
-while True:
-    if highs == GETNEXT:
-        highs, highl, hights = getlen(highf)
-    if lows == GETNEXT:
-        lows, lowl, lowts = getlen(lowf)
-
-    higheof, loweof = highs == EOF, lows == EOF
-    high0len, low0len = highs == ZEROLEN, lows == ZEROLEN
-    highreset, lowreset = highs == RESET, lows == RESET
-
-    if (hights > 0 and lowts > 0
-        and (highs == NORMAL or lows == NORMAL)):
-        if hights - lowts > TSDIFF_TOLERANCE and lows == NORMAL:
-            print("skipped low data block due to lag (hights = {}, lowts = {}, diff = {})\n".format(hights, lowts, abs(hights-lowts)))
-            eprint("warn: high ahead by too many samples, skipping low..")
-            lowf.seek(lowl, io.SEEK_CUR)
-            lows = GETNEXT
-            continue
-        if lowts - hights > TSDIFF_TOLERANCE and highs == NORMAL:
-            print("skipped high data block due to lag (hights = {}, lowts = {}, diff = {})\n".format(hights, lowts, abs(hights-lowts)))
-            eprint("warn: low ahead by too many samples, skipping high..")
-            highf.seek(highl, io.SEEK_CUR)
-            highs = GETNEXT
-            continue
-
-    if higheof or loweof:
-        if not higheof:
-            eprint("warn: low EOF before high, before", highf.tell())
-            print("LOW EOF")
-        elif not loweof:
-            eprint("warn: high EOF before low, before", lowf.tell())
-            print("HIGH EOF")
-        break
-
-    if highreset or lowreset:
-        if not highreset:
-            assert lowreset
-            eprint("warn: low RESET but not high")
-            print("LOW RESET, hights/lowts/diff", hights, lowts, abs(hights-lowts))
-            lows = GETNEXT
-            continue
-        elif not lowreset:
-            assert highreset
-            eprint("warn: high RESET but not low")
-            print("HIGH RESET, hights/lowts/diff", hights, lowts, abs(hights-lowts))
-            highs = GETNEXT
-            continue
-        else:
-            assert highreset and lowreset
-            print("RESET, hights/lowts/diff", hights, lowts, abs(hights-lowts))
-            highs = lows = GETNEXT
-            continue
-
-    if high0len or low0len:
-        if not high0len:
-            assert low0len
-            eprint("warn: spurious fall/rise of CS on low, before/ts", lowf.tell(), lowts)
-            print("LOW SPURIOUS CS, hights/lowts/diff", hights, lowts, abs(hights-lowts))
-            lows = GETNEXT
-            continue
-        elif not low0len:
-            assert high0len
-            eprint("warn: spurious fall/rise of CS on high, before/ts", highf.tell(), hights)
-            print("HIGH SPURIOUS CS, hights/lowts/diff", hights, lowts, abs(hights-lowts))
-            highs = GETNEXT
-            continue
-        else:
-            assert high0len and low0len
-            eprint("warn: spurious fall/rise of CS on both, before high/low/hights/lowts", highf.tell(), lowf.tell(), hights, lowts)
-            print("SPURIOUS CS, hights/lowts/diff", hights, lowts, abs(hights-lowts))
-            highs = lows = GETNEXT
-            continue
-
-    assert highl != 0xFFFFFFFF and lowl != 0xFFFFFFFF and highl > 0 and lowl > 0
-
-    if highl != lowl:
-        print("skipped block due to size mismatch (high {} != low {}) (hights {} lowts {} diff {})\n".format(highl, lowl, hights, lowts, abs(hights-lowts)))
-        eprint("warn: high len ({}) != low len ({}) before {} (high)/{} (low), skipping".format(highl, lowl, highf.tell(), lowf.tell()))
-        highf.seek(highl, io.SEEK_CUR)
-        lowf.seek(lowl, io.SEEK_CUR)
-        highs = lows = GETNEXT
-        continue
-
-    if not (highl - 8) in [0, 4, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000]:
-        eprint("warn: weird command+response length of {} (0x{:X}) before {} (high)/{} (low)".format(highl, highl, highf.tell(), lowf.tell()))
-    highb, lowb = getdata(highf, highl, 'high'), getdata(lowf, lowl, 'low')
-    if highb is None or lowb is None:
-        break
-    combined = combine(highb, lowb)
-    if highl < 8:
-        eprint("warn: less than 8 bytes command+response before high/low", highf.tell(), lowf.tell())
-        print("CMD : {}", fmtba(combined))
-    else:
-        print("CMD :", fmtba(combined[:8]))
-        print("RESP:", fmtba(combined[8:]))
-    print()
+def main():
+    output = []
+    highf, lowf = open(sys.argv[1], 'rb'), open(sys.argv[2], 'rb')
     highs = lows = GETNEXT
+
+    while True:
+        if highs == GETNEXT:
+            highs, highl, hights = getlen(highf)
+        if lows == GETNEXT:
+            lows, lowl, lowts = getlen(lowf)
+
+        higheof, loweof = highs == EOF, lows == EOF
+        high0len, low0len = highs == ZEROLEN, lows == ZEROLEN
+        highreset, lowreset = highs == RESET, lows == RESET
+
+        if (hights > 0 and lowts > 0
+            and (highs == NORMAL or lows == NORMAL)):
+            if hights - lowts > TSDIFF_TOLERANCE and lows == NORMAL:
+                eprint("warn: skipped low data block due to lag (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                lowf.seek(lowl, io.SEEK_CUR)
+                lows = GETNEXT
+                continue
+            if lowts - hights > TSDIFF_TOLERANCE and highs == NORMAL:
+                eprint("warn: skipped high data block due to lag (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                highf.seek(highl, io.SEEK_CUR)
+                highs = GETNEXT
+                continue
+
+        if higheof or loweof:
+            if not higheof:
+                eprint("warn: low EOF before high (highf.tell() = {})"
+                    .format(highf.tell()), output=output)
+            elif not loweof:
+                eprint("warn: high EOF before low (lowf.tell() = {})"
+                    .format(lowf.tell()), output=output)
+            break
+
+        if highreset or lowreset:
+            if not highreset:
+                assert lowreset
+                eprint("warn: low RESET but not high (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                lows = GETNEXT
+                continue
+            elif not lowreset:
+                assert highreset
+                eprint("warn: high RESET but not low (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                highs = GETNEXT
+                continue
+            else:
+                assert highreset and lowreset
+                output.append({
+                    'type': 'reset',
+                    'comment': "(hights = {}, lowts = {}, diff = {})"
+                        .format(hights, lowts, abs(hights-lowts))
+                    })
+                highs = lows = GETNEXT
+                continue
+
+        if high0len or low0len:
+            if not high0len:
+                assert low0len
+                eprint("warn: spurious fall/rise of CS on low (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                lows = GETNEXT
+                continue
+            elif not low0len:
+                assert high0len
+                eprint("warn: spurious fall/rise of CS on high (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                highs = GETNEXT
+                continue
+            else:
+                assert high0len and low0len
+                eprint("warn: spurious fall/rise of CS on both (hights = {}, lowts = {}, diff = {})"
+                    .format(hights, lowts, abs(hights-lowts)), output=output)
+                highs = lows = GETNEXT
+                continue
+
+        assert highl != 0xFFFFFFFF and lowl != 0xFFFFFFFF and highl > 0 and lowl > 0
+
+        if highl != lowl:
+            eprint("warn: skipped block due to size mismatch (high {} != low {}) (hights = {}, lowts = {}, diff = {}, highf.tell = {}, lowf.tell = {})"
+                .format(highl, lowl, hights, lowts, abs(hights-lowts), highf.tell(), lowf.tell()), output=output)
+            highf.seek(highl, io.SEEK_CUR)
+            lowf.seek(lowl, io.SEEK_CUR)
+            highs = lows = GETNEXT
+            continue
+
+        if not (highl - 8) in [0, 4, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000]:
+            eprint("warn: weird command+response length of {} (0x{:X}) (highf.tell() = {}, lowf.tell() = {})"
+                .format(highl, highl, highf.tell(), lowf.tell()), output=output)
+        highb, lowb = getdata(highf, highl, 'high'), getdata(lowf, lowl, 'low')
+        if highb is None or lowb is None:
+            break
+        combined = combine(highb, lowb)
+        if highl < 8:
+            eprint("warn: less than 8 bytes command+response (highf.tell() = {}, lowf.tell() = {})"
+                .format(highf.tell(), lowf.tell()), output=output)
+            output.append({
+                'type': 'command',
+                'command': binascii.hexlify(combined).decode("utf-8")
+            })
+        else:
+            output.append({
+                'type': 'command',
+                'command': binascii.hexlify(combined[:8]).decode("utf-8"),
+                'response': binascii.hexlify(combined[8:]).decode("utf-8")
+            })
+        highs = lows = GETNEXT
+    print(json.dumps(output))
+
+if __name__ == "__main__":
+    main()
