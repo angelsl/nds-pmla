@@ -88,11 +88,12 @@ impl Blowfish {
         if level >= 2 {
             nds_expand_key(self, &mut key);
         }
-        if level >= 3 {
-            key[2] = key[0];
-            key[1] = key[0];
+        // TODO, untested
+        /* if level >= 3 {
+            key[2] <<= 1;
+            key[1] >>= 1;
             nds_expand_key(self, &mut key);
-        }
+        } */
     }
 
     fn reset(&mut self) {
@@ -182,6 +183,12 @@ mod test {
                     ciphertext: vec![0xF6, 0x6C, 0xE1, 0x57, 0xF1, 0x2C, 0x1F, 0xFE]
             },
         ]
+    }
+
+    #[test]
+    fn init() {
+        let mut state = Blowfish::new();
+        state.init("ABXK", 3);
     }
 
     #[test]
