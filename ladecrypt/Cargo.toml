@@ -4,4 +4,3 @@ version = "0.1.0"
 authors = ["angelsl <angelsl@in04.sg>"]
 
 [dependencies]
-clippy = ">0.0.0"
