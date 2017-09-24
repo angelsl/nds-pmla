@@ -44,7 +44,7 @@ impl Blowfish {
         unsafe { mem::uninitialized() }
     }
 
-    pub fn init(&mut self, gamecode: &str, level: u32) {
+    pub fn init(&mut self, gamecode: &[u8], level: u32) {
         fn nds_expand_key(bf: &mut Blowfish, key: &mut [u32; 3]) {
             {
                 let (l, r) = bf.encrypt(key[2], key[1]); key[2] = l; key[1] = r;

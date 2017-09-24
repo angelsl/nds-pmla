@@ -4,3 +4,6 @@ version = "0.1.0"
 authors = ["angelsl <angelsl@in04.sg>"]
 
 [dependencies]
+serde = ">0.0.0"
+serde_json = ">0.0.0"
+serde_derive = ">0.0.0"
