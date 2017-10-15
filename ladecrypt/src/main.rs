@@ -29,14 +29,17 @@ enum Block {
 }
 
 enum EncLevel {
-    Raw, Key1, Key2
+    Raw, Key1, Key2, RawFC
 }
 
 struct State {
     bf: Blowfish,
     k2: Key2,
     k2_seed: u8,
-    enc: EncLevel
+    enc: EncLevel,
+    last_cmd: Vec<u8>,
+    last_resp: Vec<u8>,
+    rept: usize
 }
 
 fn uu8b(b: &[u8]) -> u64 {
@@ -74,7 +77,8 @@ fn do_cmd(cmd: &str, resp: Option<&str>, state: &mut State) {
             print!("{} CMD: {}: ", match state.enc {
                 EncLevel::Raw => "RAW",
                 EncLevel::Key1 => "KEY1",
-                EncLevel::Key2 => "KEY2"
+                EncLevel::Key2 => "KEY2",
+                EncLevel::RawFC => "FC"
             }, $cmd);
             println!($($y), +);
         });
@@ -101,6 +105,21 @@ fn do_cmd(cmd: &str, resp: Option<&str>, state: &mut State) {
         None => vec![0u8; 0]
     };
     match state.enc {
+        EncLevel::RawFC => {
+            if state.last_cmd == cmdb && state.last_resp == resb {
+                state.rept += 1;
+                return;
+            }
+
+            if state.rept > 0 {
+                println!("previous command/response repeated {} times", state.rept);
+                state.rept = 0;
+            }
+
+            pcmd!("{}", resb.to_hex());
+            state.last_cmd = cmdb;
+            state.last_resp = resb;
+        }
         EncLevel::Raw => {
             let cmd0 = cmdb[0];
             match cmd0 {
@@ -169,7 +188,7 @@ fn do_cmd(cmd: &str, resp: Option<&str>, state: &mut State) {
                 0xB8 if resr.len() == 4 => pcmd!(cmdr.to_hex(), p "get chipid = {}", resr.to_hex()),
                 0x66 if resr.len() == 4 => {
                     pcmd!(cmdr.to_hex(), p "r4isdhc switch from KEY2 to RAW = raw {}, key2 decrypted {}", resp.unwrap_or("wtf?"), resr.to_hex());
-                    state.enc = EncLevel::Raw;
+                    state.enc = EncLevel::RawFC;
                 }
                 _ if resr.len() == 4 => {
                     pcmd!(cmdr.to_hex(), p "corrupt get chipid = {}", resr.to_hex());
@@ -217,7 +236,7 @@ fn main() {
         }
     };
     let mut state = State {
-        bf: Blowfish::new(), k2: Key2::new(), enc: EncLevel::Raw, k2_seed: 0xFF
+        bf: Blowfish::new(), k2: Key2::new(), enc: EncLevel::Raw, k2_seed: 0xFF, last_cmd: vec![], last_resp: vec![], rept: 0
     };
     for block in &blocks {
         do_block(block, &mut state);
